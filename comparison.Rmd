@@ -1,0 +1,187 @@
+---
+title: "Credit Card fraud detection"
+output:
+  html_document:
+    df_print: paged
+---
+
+The data was taken from Data-Flair's [website](https://data-flair.training/blogs/data-science-machine-learning-project-credit-card-fraud-detection/)
+
+```{r}
+library(dplyr) # for data manipulation
+library(stringr) # for data manipulation
+library(caret) # for sampling
+library(caTools) # for train/test split
+library(ggplot2) # for data visualization
+library(corrplot) # for correlations
+library(rpart)# for decision tree model
+library(randomForest)# for random forest model
+library(xgboost) # for XGBoost model
+library(PRROC) #for plotting ROC curve
+
+set.seed(123)
+```
+
+# Loading in the Dataset
+
+```{r}
+df <- read.csv("creditcard.csv")
+dim(df)
+```
+
+# Exploratory Data Analysis
+We now go through some preliminary steps to get a better understanding of our dataset
+
+```{r}
+head(df,6)
+```
+Since the original file was derived from real world financial data, it has been encoded into a form for privacy. By the looks of it, the columns might be results from a feature extrcat process like PCA. Our target column here is "Class", where 0 indicates a safe transaction and 1 indicates a fraudulent one. Now, we look at the summary statistics.
+
+```{r}
+summary(df)
+```
+
+Another important aspect is checking if there are any missing values and how to handle them.
+```{r}
+colSums(is.na(df))
+```
+
+As seen above, there are no missing values. Now, we look at the value counts in our target variable.
+```{r}
+table(df$Class)
+```
+
+Clearly, we can see that our target is skewed extremely skewed, with 99% of the values as 0. This may create problems during model problems. There are various methods like downsampling, upsampling, ROSE, smote etc. that can be used to equalise the targets and get much better performance. We will not be using any of those, and training are models on the skewed data itself to view the raw results.
+
+```{r}
+df %>%
+  ggplot(aes(x = Time, fill = factor(Class))) + geom_histogram(bins = 100)+
+  labs(x = 'Time in seconds since first transaction', y = 'No. of transactions') +
+  ggtitle('Distribution of time of transaction by class') +
+  facet_grid(Class ~ ., scales = 'free_y')
+```
+
+```{r}
+ggplot(df, aes(x = factor(Class), y = Amount)) + geom_boxplot() + 
+labs(x = 'Class', y = 'Amount') +
+ggtitle("Distribution of transaction amount by class")
+```
+An important observation from the above plot is that nearly all fraudulent transactions where of very small amounts.
+
+```{r}
+correlations <- cor(df[,-1],method="pearson")
+corrplot(correlations, number.cex = .9, method = "circle", type = "full", tl.cex=0.8,tl.col = "black")
+```
+Most of our features are uncorrelated, which means there is very little redundancy in the dataset. This further fuels our assumption that feature extraction was previously performed.
+
+# Data Preprocessing
+We first need to get rid of the "Time" column as it does not provide meaningful information to Tree-based models. We then convert our target column "Class" into categorical type as well as scale all the features.
+
+```{r}
+df <- df[,-1]
+```
+
+```{r}
+df$Class <- as.factor(df$Class)
+df[,-30] <- scale(df[,-30])
+
+head(df)
+```
+Now, we can perform a 7:3 split of the data to get our training and test set.
+```{r}
+set.seed(123)
+split <- sample.split(df$Class, SplitRatio = 0.7)
+train_df <-  subset(df, split == 1)
+test_df <- subset(df, split == 0)
+
+print(list(dim(train_df), dim(test_df)))
+```
+
+# Model Training
+We aim to train 3 models and compare their Receiver Operating Characteristic plot, AUC, Accuracy and Test Positive Rate (TPR)
+
+## Decision Tree
+
+```{r}
+dt_model <- rpart(Class ~ ., data = train_df) #tree library can also be used
+summary(dt_model)
+```
+
+```{r}
+dt_pred <- predict(dt_model, newdata = test_df, type = "class")
+plot(roc.curve(test_df$Class, dt_pred, curve = TRUE))
+```
+
+```{r}
+table(test_df$Class, dt_pred)
+```
+
+```{r}
+dt_acc = round((85272+121)/85443, 3)
+dt_tpr = round(121/148, 3)
+message("Accuracy of Decision Tree model = ", dt_acc)
+message("True positive rate = ", dt_tpr)
+```
+As seen above, we get a very low AUC, a very high accuracy and a decent TPR.
+
+## Random Forest
+
+```{r}
+rf_model = randomForest( Class~., data = train_df, ntree = 200)
+summary(rf_model)
+```
+
+```{r}
+rf_pred <- predict(rf_model, newdata = test_df[,-30], type = "class")
+plot(roc.curve(test_df$Class, rf_pred, curve = TRUE))
+```
+
+```{r}
+table(test_df$Class, rf_pred)
+```
+
+```{r}
+rf_acc = round((85288+116)/85443, 3)
+rf_tpr = round(116/148, 3)
+message("Accuracy of Random Forest model = ", rf_acc)
+message("True positive rate = ", rf_tpr)
+```
+As seen above, we get a very low AUC, a very high accuracy and a TPR lower than that of the decision tree. 
+
+## Gradient Boosted Trees
+
+```{r}
+boost_model <- xgboost(data = data.matrix(train_df[,-30]), 
+ label = as.numeric(levels(train_df$Class))[train_df$Class],
+ eta = 0.1,
+ gamma = 0.1,
+ max_depth = 10, 
+ nrounds = 300, 
+ objective = "multi:softmax",
+ colsample_bytree = 0.6,
+ verbose = 0,
+ nthread = 7,
+ num_class = 2,
+ eval_metric = "merror"
+)
+summary(boost_model)
+```
+```{r}
+boost_pred <- predict(boost_model, newdata = data.matrix(test_df[,-30]), type = "class")
+plot(roc.curve(test_df$Class, boost_pred, curve = TRUE))
+```
+
+```{r}
+table(test_df$Class, boost_pred)
+```
+
+```{r}
+boost_acc = round((85292+119)/85443, 3)
+boost_tpr = round(119/148, 3)
+message("Accuracy of Decision Tree model = ", boost_acc)
+message("True positive rate = ", boost_tpr)
+```
+As seen above, we get a excellent AUC, a very high accuracy and a TPR that is close to that of the decision tree.
+
+# Observations
+Out of all 3 tree-based models, the XGBoost model (gradient boosted trees) can be said to perform the best. Even though the decision tree had higher TPR, it had disappointing AUC. With regards to the Random Forest, better performance can be obtained by considerable hyperparameter tuning.
